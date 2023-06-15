@@ -838,11 +838,9 @@ def go_deps():
         name = "com_github_benbjohnson_immutable",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/benbjohnson/immutable",
-        sha256 = "0647fb6491c6606945e04f2c83b4163b9cf3584550f387695c32f262efa198b7",
-        strip_prefix = "github.com/benbjohnson/immutable@v0.2.1",
-        urls = [
-            "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/benbjohnson/immutable/com_github_benbjohnson_immutable-v0.2.1.zip",
-        ],
+        # TODO: mirror this repo (to fix, run `./dev generate bazel --mirror`)
+        sum = "h1:GYHcksoJ9K6HyAUpGxwZURrbTkXA0Dh4otXGqbhdrjA=",
+        version = "v0.4.3",
     )
     go_repository(
         name = "com_github_benbjohnson_tmpl",

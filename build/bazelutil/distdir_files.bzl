@@ -248,7 +248,6 @@ DISTDIR_FILES = {
     "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/bazelbuild/remote-apis/com_github_bazelbuild_remote_apis-v0.0.0-20200708200203-1252343900d9.zip": "b0e976769bbe7c63773b50b407c952c0d1525b6d26b3585e16e09cb1cd195e75",
     "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/bazelbuild/rules_go/com_github_bazelbuild_rules_go-v0.26.0.zip": "0f69d51e54c1012f62434b68e6d49e2e1c1371a493926da58063e8461aa2b9ff",
     "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/benbjohnson/clock/com_github_benbjohnson_clock-v1.1.0.zip": "d04e441d7f577f7861db72305478105dc75fd7030307a0fa325e328500283445",
-    "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/benbjohnson/immutable/com_github_benbjohnson_immutable-v0.2.1.zip": "0647fb6491c6606945e04f2c83b4163b9cf3584550f387695c32f262efa198b7",
     "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/benbjohnson/tmpl/com_github_benbjohnson_tmpl-v1.0.0.zip": "7341fd268e36500455f8f0efab16db29525f2483c0fc8dca1e81f9c42a10b633",
     "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/beorn7/perks/com_github_beorn7_perks-v1.0.1.zip": "25bd9e2d94aca770e6dbc1f53725f84f6af4432f631d35dd2c46f96ef0512f1a",
     "https://storage.googleapis.com/cockroach-godeps/gomod/github.com/bgentry/go-netrc/com_github_bgentry_go_netrc-v0.0.0-20140422174119-9fd32a8b3d3d.zip": "59fbb1e8e307ccd7052f77186990d744284b186e8b1c5ebdfb12405ae8d7f935",

@@ -85,6 +85,10 @@ func (t TableID) index() int {
 	return int((t>>32)&tableIDMask) - 1
 }
 
+func (t TableID) Idx() int {
+	return t.index()
+}
+
 // TableAnnID uniquely identifies an annotation on an instance of table
 // metadata. A table annotation allows arbitrary values to be cached with table
 // metadata, which can be used to avoid recalculating base table properties or
