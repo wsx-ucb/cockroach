@@ -1447,7 +1447,39 @@ func RelNode(rel RelExpr) any {
 }
 
 func Schema(mem *Memo) any {
-	return arr{}
+	table_schemas := arr{}
+	for _, meta := range mem.metadata.AllTables() {
+		table := meta.Table
+		tys := arr{}
+		nbs := arr{}
+		for i := 0; i < table.ColumnCount(); i++ {
+			col := table.Column(i)
+			tys = append(tys, ty(col.DatumType()))
+			nbs = append(nbs, col.IsNullable())
+		}
+		kys := arr{}
+		for i := 0; i < table.UniqueCount(); i++ {
+			unique_constraint := table.Unique(i)
+			if _, partial := unique_constraint.Predicate(); !partial {
+				kst := arr{}
+				for j := 0; j < unique_constraint.ColumnCount(); j++ {
+					cid := unique_constraint.ColumnOrdinal(table, j)
+					kst = append(kst, cid)
+				}
+				kys = append(kys, kst)
+			}
+		}
+		table_schemas = append(table_schemas, obj{
+			"types":    tys,
+			"key":      kys,
+			"nullable": nbs,
+		})
+	}
+	return table_schemas
+}
+
+func ty(t *types.T) string {
+	return strings.ToUpper(t.String())
 }
 
 func (e env) relNode(rel RelExpr) (any, opt.ColList) {
@@ -1471,7 +1503,7 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 		}
 		schema := []string{}
 		for _, col := range rel.Cols {
-			schema = append(schema, rel.Memo().metadata.ColumnMeta(col).Type.String())
+			schema = append(schema, ty(rel.Memo().metadata.ColumnMeta(col).Type))
 		}
 		return obj{"values": obj{
 			"schema":  schema,
@@ -1495,7 +1527,7 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 		rel.Passthrough.ForEach(func(col opt.ColumnID) {
 			exprs = append(exprs, obj{
 				"column": pe.resolveCol(col),
-				"ty":     rel.Memo().metadata.ColumnMeta(col).Type.String(),
+				"ty":     ty(rel.Memo().metadata.ColumnMeta(col).Type),
 			})
 			scope = append(scope, col)
 		})
@@ -1577,7 +1609,7 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 }
 
 func (e env) rexNode(rex opt.ScalarExpr) any {
-	ty := rex.DataType().String()
+	ty := ty(rex.DataType())
 	switch rex := rex.(type) {
 	case *VariableExpr:
 		return obj{
@@ -1592,7 +1624,7 @@ func (e env) rexNode(rex opt.ScalarExpr) any {
 		return obj{
 			"op":   "AND",
 			"args": fs,
-			"type": "bool",
+			"type": "BOOL",
 		}
 	case *FiltersItem:
 		return e.rexNode(rex.Condition)
@@ -1603,8 +1635,8 @@ func (e env) rexNode(rex opt.ScalarExpr) any {
 		for i := 0; i < rex.ChildCount(); i += 1 {
 			if arg, ok := rex.Child(i).(opt.ScalarExpr); ok {
 				args = append(args, e.rexNode(arg))
-				// } else {
-				// panic(fmt.Sprintf("Higher-order operation: %v", rex.Op().SyntaxTag()))
+			} else {
+				args = append(args, fmt.Sprintf("?arg-of-hop (%v)?", rex.Op().String()))
 			}
 		}
 		return obj{
