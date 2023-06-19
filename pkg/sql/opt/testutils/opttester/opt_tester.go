@@ -1158,6 +1158,11 @@ func (ot *OptTester) OptBuild() (opt.Expr, error) {
 // normalization transformations applied to it. The normalized output of the
 // optbuilder is the final expression tree.
 func (ot *OptTester) OptNorm() (opt.Expr, error) {
+	if rel, e := ot.OptBuild(); e == nil {
+		exp.before = memo.RelNode(rel.(memo.RelExpr))
+		exp.beforeHelp = ot.FormatExpr(rel)
+		fmt.Println(exp.beforeHelp)
+	}
 	o := ot.makeOptimizer()
 	o.NotifyOnMatchedRule(func(ruleName opt.RuleName) bool {
 		if !ruleName.IsNormalize() {
@@ -1178,6 +1183,11 @@ func (ot *OptTester) OptNorm() (opt.Expr, error) {
 // transformations applied to it. The result is the memo expression tree with
 // the lowest estimated cost.
 func (ot *OptTester) Optimize() (opt.Expr, error) {
+	if rel, e := ot.OptBuild(); e == nil {
+		exp.before = memo.RelNode(rel.(memo.RelExpr))
+		exp.beforeHelp = ot.FormatExpr(rel)
+		fmt.Println(exp.beforeHelp)
+	}
 	return ot.OptimizeWithTables(nil)
 }
 
@@ -2254,18 +2264,7 @@ func (ot *OptTester) buildExpr(factory *norm.Factory) error {
 	}
 	ot.semaCtx.Annotations = tree.MakeAnnotations(stmt.NumAnnotations)
 	ot.semaCtx.TypeResolver = ot.catalog
-	var o xform.Optimizer
-	o.Init(ot.ctx, &ot.evalCtx, ot.catalog)
-	f := o.Factory()
-	f.DisableOptimizations()
-	b := optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, f, stmt.AST)
-	err = b.Build()
-	if err != nil {
-		return err
-	}
-	exp.before = memo.RelNode(f.Memo().RootExpr().(memo.RelExpr))
-	exp.beforeHelp = ot.FormatExpr(f.Memo().RootExpr())
-	b = optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, factory, stmt.AST)
+	b := optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, factory, stmt.AST)
 	return b.Build()
 }
 
