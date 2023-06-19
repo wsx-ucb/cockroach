@@ -11,12 +11,8 @@
 package xform
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"fmt"
 	"math/rand"
-	"os"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
@@ -237,46 +233,6 @@ func (o *Optimizer) Memo() *memo.Memo {
 	return o.mem
 }
 
-type exporter struct {
-	id     uint
-	schema any
-	before any
-	after  any
-}
-
-var exp = &exporter{}
-
-func (e *exporter) dump() {
-	if e.schema != nil && e.before != nil && e.after != nil {
-		f, err := os.Create(fmt.Sprintf("%v.json", e.id))
-		if err != nil {
-			panic(err)
-		}
-		defer f.Close()
-		w := bufio.NewWriter(f)
-		output := map[string]any{
-			"schemas": e.schema,
-			"queries": []any{
-				e.before,
-				e.after,
-			},
-		}
-		rawOutput, err := json.MarshalIndent(output, "", "  ")
-		if err != nil {
-			panic(err)
-		}
-		_, err = fmt.Fprint(w, string(rawOutput))
-		if err != nil {
-			panic(err)
-		}
-		w.Flush()
-	}
-	e.id += 1
-	e.schema = nil
-	e.before = nil
-	e.after = nil
-}
-
 // Optimize returns the expression which satisfies the required physical
 // properties at the lowest possible execution cost, but is still logically
 // equivalent to the given expression. If there is a cost "tie", then any one
@@ -305,9 +261,6 @@ func (o *Optimizer) Optimize() (_ opt.Expr, err error) {
 		return nil, errors.AssertionFailedf("cannot optimize a memo multiple times")
 	}
 
-	exp.schema = memo.Schema(o.mem)
-	exp.before = memo.RelNode(o.mem.RootExpr().(memo.RelExpr))
-
 	// Optimize the root expression according to the properties required of it.
 	o.optimizeRootWithProps()
 
@@ -333,9 +286,6 @@ func (o *Optimizer) Optimize() (_ opt.Expr, err error) {
 	// Validate that the factory's stack depth is zero after all optimizations
 	// have been applied.
 	o.f.CheckConstructorStackDepth()
-
-	exp.after = memo.RelNode(o.mem.RootExpr().(memo.RelExpr))
-	exp.dump()
 
 	return root, nil
 }
