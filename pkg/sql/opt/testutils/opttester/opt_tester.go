@@ -11,6 +11,7 @@
 package opttester
 
 import (
+	"bufio"
 	"bytes"
 	"compress/zlib"
 	"context"
@@ -2253,7 +2254,18 @@ func (ot *OptTester) buildExpr(factory *norm.Factory) error {
 	}
 	ot.semaCtx.Annotations = tree.MakeAnnotations(stmt.NumAnnotations)
 	ot.semaCtx.TypeResolver = ot.catalog
-	b := optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, factory, stmt.AST)
+	var o xform.Optimizer
+	o.Init(ot.ctx, &ot.evalCtx, ot.catalog)
+	f := o.Factory()
+	f.DisableOptimizations()
+	b := optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, f, stmt.AST)
+	err = b.Build()
+	if err != nil {
+		return err
+	}
+	exp.before = memo.RelNode(f.Memo().RootExpr().(memo.RelExpr))
+	exp.beforeHelp = ot.FormatExpr(f.Memo().RootExpr())
+	b = optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, factory, stmt.AST)
 	return b.Build()
 }
 
@@ -2274,18 +2286,66 @@ func (ot *OptTester) makeOptimizer() *xform.Optimizer {
 	return &o
 }
 
+type exporter struct {
+	id         uint
+	schema     any
+	before     any
+	beforeHelp string
+	after      any
+	afterHelp  string
+}
+
+var exp = &exporter{}
+
+func (e *exporter) dump() {
+	if e.schema != nil && e.before != nil && e.after != nil {
+		f, err := os.Create(fmt.Sprintf("%v.json", e.id))
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		w := bufio.NewWriter(f)
+		output := map[string]any{
+			"schemas": e.schema,
+			"queries": []any{
+				e.before,
+				e.after,
+			},
+			"help": []any{
+				e.beforeHelp,
+				e.afterHelp,
+			},
+		}
+		rawOutput, err := json.MarshalIndent(output, "", "  ")
+		if err != nil {
+			panic(err)
+		}
+		_, err = fmt.Fprint(w, string(rawOutput))
+		if err != nil {
+			panic(err)
+		}
+		w.Flush()
+	}
+	e.id += 1
+	e.schema = nil
+	e.before = nil
+	e.after = nil
+}
+
 // optimizeExpr calls the optimizer's Optimize function. The tables argument, if
 // not nil, allows the caller to update the table metadata before optimizing.
 func (ot *OptTester) optimizeExpr(
 	o *xform.Optimizer, tables map[cat.StableID]cat.Table,
 ) (opt.Expr, error) {
-	err := ot.buildExpr(o.Factory())
+	f := o.Factory()
+	err := ot.buildExpr(f)
 	if err != nil {
 		return nil, err
 	}
 	if tables != nil {
 		o.Memo().Metadata().UpdateTableMeta(&ot.evalCtx, tables)
 	}
+	exp.schema = memo.Schema(o.Memo())
 	root, err := o.Optimize()
 	if err != nil {
 		return nil, err
@@ -2294,6 +2354,9 @@ func (ot *OptTester) optimizeExpr(
 	if ot.Flags.PerturbCost != 0 {
 		o.RecomputeCost()
 	}
+	exp.after = memo.RelNode(root.(memo.RelExpr))
+	exp.afterHelp = ot.FormatExpr(root)
+	exp.dump()
 	return root, nil
 }
 
