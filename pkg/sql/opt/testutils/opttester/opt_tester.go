@@ -1161,7 +1161,6 @@ func (ot *OptTester) OptNorm() (opt.Expr, error) {
 	if rel, e := ot.OptBuild(); e == nil {
 		exp.before = memo.RelNode(rel.(memo.RelExpr))
 		exp.beforeHelp = ot.FormatExpr(rel)
-		fmt.Println(exp.beforeHelp)
 	}
 	o := ot.makeOptimizer()
 	o.NotifyOnMatchedRule(func(ruleName opt.RuleName) bool {
@@ -1186,7 +1185,6 @@ func (ot *OptTester) Optimize() (opt.Expr, error) {
 	if rel, e := ot.OptBuild(); e == nil {
 		exp.before = memo.RelNode(rel.(memo.RelExpr))
 		exp.beforeHelp = ot.FormatExpr(rel)
-		fmt.Println(exp.beforeHelp)
 	}
 	return ot.OptimizeWithTables(nil)
 }
