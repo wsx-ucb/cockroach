@@ -2296,7 +2296,7 @@ var exp = &exporter{}
 
 func (e *exporter) dump() {
 	if e.schema != nil && e.before != nil && e.after != nil {
-		f, err := os.Create(fmt.Sprintf("%v.json", e.id))
+		f, err := os.Create(fmt.Sprintf("/home/wsx/proj/cockroach/tmp/%v.json", e.id))
 		if err != nil {
 			panic(err)
 		}

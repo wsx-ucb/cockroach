@@ -1483,10 +1483,36 @@ func ty(t *types.T) string {
 }
 
 func (e env) relNode(rel RelExpr) (any, opt.ColList) {
+	md := rel.Memo().Metadata()
 	switch rel := rel.(type) {
 	case *ScanExpr:
-		// TODO: Handle partial scan
-		return obj{"scan": rel.Table.Idx()}, rel.Cols.ToList()
+		tab := md.Table(rel.Table)
+		if rel.Constraint != nil || rel.InvertedConstraint != nil {
+			return fmt.Sprintf("?not-implemented constrained (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
+		}
+
+		if tab.ColumnCount() == rel.Cols.Len() {
+			return obj{"scan": rel.Table.Idx()}, rel.Cols.ToList()
+		} else {
+			cols := opt.ColList{}
+			for i := 0; i < tab.ColumnCount(); i += 1 {
+				cols = append(cols, rel.Table.ColumnID(i))
+			}
+			pe := e.extend(cols)
+			exprs := []any{}
+			scope := opt.ColList{}
+			rel.Cols.ForEach(func(col opt.ColumnID) {
+				exprs = append(exprs, obj{
+					"column": pe.resolveCol(col),
+					"ty":     ty(md.ColumnMeta(col).Type),
+				})
+				scope = append(scope, col)
+			})
+			return obj{"project": obj{
+				"columns": exprs,
+				"source":  obj{"scan": rel.Table.Idx()},
+			}}, scope
+		}
 	case *ValuesExpr:
 		rows := []any{}
 		for _, row := range rel.Rows {
@@ -1503,7 +1529,7 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 		}
 		schema := []string{}
 		for _, col := range rel.Cols {
-			schema = append(schema, ty(rel.Memo().metadata.ColumnMeta(col).Type))
+			schema = append(schema, ty(md.ColumnMeta(col).Type))
 		}
 		return obj{"values": obj{
 			"schema":  schema,
@@ -1527,7 +1553,7 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 		rel.Passthrough.ForEach(func(col opt.ColumnID) {
 			exprs = append(exprs, obj{
 				"column": pe.resolveCol(col),
-				"ty":     ty(rel.Memo().metadata.ColumnMeta(col).Type),
+				"ty":     ty(md.ColumnMeta(col).Type),
 			})
 			scope = append(scope, col)
 		})
@@ -1615,6 +1641,12 @@ func (e env) rexNode(rex opt.ScalarExpr) any {
 		return obj{
 			"column": e.resolveCol(rex.Col),
 			"type":   ty,
+		}
+	case *ConstExpr:
+		return obj{
+			"op":   rex.Value.String(),
+			"args": arr{},
+			"type": ty,
 		}
 	case *FiltersExpr:
 		fs := []any{}
