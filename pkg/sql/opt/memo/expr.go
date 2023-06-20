@@ -1629,6 +1629,46 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 			"condition": e.extend(scope).rexNode(&rel.On),
 			"source":    obj{"correlate": arr{left, right}},
 		}}, scope
+	case *GroupByExpr:
+		source, sourceScope := e.relNode(rel.Input)
+		matchEnv := e.extend(sourceScope)
+		groupScope := rel.GroupingCols.ToList()
+		groupProj, _ := nil //TODO: Use remap
+		matchList := arr{}
+		for idx, col := range groupScope {
+			matchIdx := int(matchEnv.resolveCol(col)) + len(groupScope)
+			matchList = append(matchList, obj{
+				"op": "=",
+				"args": arr{obj{
+					"column": idx,
+					"ty":     ty(md.ColumnMeta(col).Type),
+				}, obj{
+					"column": matchIdx,
+					"ty":     ty(md.ColumnMeta(col).Type),
+				}},
+				"type": "BOOL",
+			})
+		}
+		aggs := arr{}
+		for _, aggExpr := range rel.Aggregations {
+			aggs = append(aggs, e.rexNode(aggExpr.Agg))
+		}
+		return obj{"distinct": obj{"correlate": arr{
+			groupProj, obj{
+				"aggregate": aggs,
+				"source": obj{
+					"filter": obj{
+						"condition": obj{
+							"op":   "AND",
+							"args": matchList,
+							"type": "BOOL",
+						},
+						"source": source,
+					},
+				},
+			},
+		}}}, append(groupScope, rel.Aggregations.OutputCols().ToList()...)
+
 	default:
 		return fmt.Sprintf("?not-implemented (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
 	}
