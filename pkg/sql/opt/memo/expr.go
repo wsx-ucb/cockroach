@@ -1453,7 +1453,7 @@ func (e Env) col(col opt.ColumnID) uint {
 	}
 }
 
-func (e Env) colTy(md *opt.Metadata, col opt.ColumnID) string {
+func colTy(md *opt.Metadata, col opt.ColumnID) string {
 	return ty(md.ColumnMeta(col).Type)
 }
 
@@ -1505,7 +1505,7 @@ func (e Env) remap(md *opt.Metadata, cols opt.ColSet, rel any, scope opt.ColList
 		cols.ForEach(func(col opt.ColumnID) {
 			exprs = append(exprs, obj{
 				"column": pe.col(col),
-				"ty":     pe.colTy(md, col),
+				"ty":     colTy(md, col),
 			})
 			newScope = append(newScope, col)
 		})
@@ -1568,7 +1568,7 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 		}
 		schema := []string{}
 		for _, col := range rel.Cols {
-			schema = append(schema, e.colTy(md, col))
+			schema = append(schema, colTy(md, col))
 		}
 		return obj{"values": obj{
 			"schema":  schema,
@@ -1592,7 +1592,7 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 		rel.Passthrough.ForEach(func(col opt.ColumnID) {
 			exprs = append(exprs, obj{
 				"column": pe.col(col),
-				"ty":     pe.colTy(md, col),
+				"ty":     colTy(md, col),
 			})
 			scope = append(scope, col)
 		})
@@ -1624,6 +1624,44 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 			"condition": e.extend(scope).RexNode(&rel.On),
 			"source":    obj{"correlate": arr{left, right}},
 		}}, scope
+	case *GroupByExpr:
+		source, sourceScope := e.RelNode(rel.Input)
+		se := e.extend(sourceScope)
+		groupProj, groupScope := e.remap(md, rel.GroupingCols, source, sourceScope)
+		matchList := arr{}
+		for idx, col := range groupScope {
+			matchIdx := int(se.col(col)) + len(groupScope)
+			matchList = append(matchList, obj{
+				"op": "<=>",
+				"args": arr{obj{
+					"column": idx,
+					"ty":     colTy(md, col),
+				}, obj{
+					"column": matchIdx,
+					"ty":     colTy(md, col),
+				}},
+				"type": "BOOL",
+			})
+		}
+		aggs := arr{}
+		for _, aggExpr := range rel.Aggregations {
+			aggs = append(aggs, se.RexNode(aggExpr.Agg))
+		}
+		return obj{"distinct": obj{"correlate": arr{
+			groupProj, obj{
+				"aggregate": aggs,
+				"source": obj{
+					"filter": obj{
+						"condition": obj{
+							"op":   "AND",
+							"args": matchList,
+							"type": "BOOL",
+						},
+						"source": source,
+					},
+				},
+			},
+		}}}, append(groupScope, rel.Aggregations.OutputCols().ToList()...)
 	case *LookupJoinExpr:
 		left, leftScope := e.RelNode(rel.Input)
 		rightCols := rel.lookupProps.OutputCols
@@ -1675,6 +1713,25 @@ func (e Env) RexNode(rex opt.ScalarExpr) any {
 		return e.RexNode(rex.Condition)
 	case *ProjectionsItem:
 		return e.RexNode(rex.Element)
+	case *ExistsExpr:
+		rel, _ := e.RelNode(rex.Input)
+		return obj{
+			"op":   "EXISTS",
+			"args": arr{},
+			"rel":  rel,
+			"type": "BOOL",
+		}
+	case *AnyExpr:
+		rel, _ := e.RelNode(rex.Input)
+		if rex.Cmp == opt.EqOp {
+			return obj{
+				"op":   "IN",
+				"args": arr{e.RexNode(rex.Scalar)},
+				"rel":  rel,
+				"type": "BOOL",
+			}
+		}
+		return fmt.Sprintf("?not-implemented (%v)?", rex.Op().String())
 	default:
 		args := []any{}
 		for i := 0; i < rex.ChildCount(); i += 1 {
