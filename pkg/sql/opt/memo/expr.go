@@ -1410,16 +1410,22 @@ func (e ScalarListExpr) isConstantsAndPlaceholdersAndVariables(insideTuple bool)
 	return true
 }
 
-type env struct {
+type Env struct {
 	dict *immutable.Map[opt.ColumnID, uint]
 	lvl  uint
-	md   *opt.Metadata
+	tmap *map[cat.StableID]uint
+	tabs *[]cat.Table
 }
 
-func (e env) extend(cols opt.ColList) env {
-	dict := e.dict
-	lvl := e.lvl
-	md := e.md
+func (e *Env) Init() {
+	e.dict = immutable.NewMap[opt.ColumnID, uint](nil)
+	e.lvl = 0
+	e.tmap = &map[cat.StableID]uint{}
+	e.tabs = &[]cat.Table{}
+}
+
+func (e Env) extend(cols opt.ColList) Env {
+	dict, lvl, tmap, tabs := e.dict, e.lvl, e.tmap, e.tabs
 	for _, col := range cols {
 		if vl, exists := dict.Get(col); !exists {
 			dict = dict.Set(col, lvl)
@@ -1428,10 +1434,18 @@ func (e env) extend(cols opt.ColList) env {
 			panic(fmt.Sprintf("Duplicated column ID mapping: %v => %v or %v", col, vl, lvl))
 		}
 	}
-	return env{dict, lvl, md}
+	return Env{dict, lvl, tmap, tabs}
 }
 
-func (e env) col(col opt.ColumnID) uint {
+func (e Env) tab(tab cat.Table) uint {
+	if _, exists := (*e.tmap)[tab.ID()]; !exists {
+		(*e.tmap)[tab.ID()] = uint(len(*e.tabs))
+		*e.tabs = append(*e.tabs, tab)
+	}
+	return (*e.tmap)[tab.ID()]
+}
+
+func (e Env) col(col opt.ColumnID) uint {
 	if vl, exists := e.dict.Get(col); exists {
 		return vl
 	} else {
@@ -1439,23 +1453,16 @@ func (e env) col(col opt.ColumnID) uint {
 	}
 }
 
-func (e env) colTy(col opt.ColumnID) string {
-	return ty(e.md.ColumnMeta(col).Type)
+func (e Env) colTy(md *opt.Metadata, col opt.ColumnID) string {
+	return ty(md.ColumnMeta(col).Type)
 }
 
 type obj = map[string]any
 type arr = []any
 
-func RelNode(rel RelExpr) any {
-	e := env{dict: immutable.NewMap[opt.ColumnID, uint](nil), lvl: 0, md: rel.Memo().Metadata()}
-	relNode, _ := e.relNode(rel)
-	return relNode
-}
-
-func Schema(mem *Memo) any {
+func (e Env) Schema() any {
 	table_schemas := arr{}
-	for _, meta := range mem.metadata.AllTables() {
-		table := meta.Table
+	for _, table := range *e.tabs {
 		tys := arr{}
 		nbs := arr{}
 		for i := 0; i < table.ColumnCount(); i++ {
@@ -1488,7 +1495,7 @@ func ty(t *types.T) string {
 	return strings.ToUpper(t.String())
 }
 
-func (e env) remap(cols opt.ColSet, rel any, scope opt.ColList) (any, opt.ColList) {
+func (e Env) remap(md *opt.Metadata, cols opt.ColSet, rel any, scope opt.ColList) (any, opt.ColList) {
 	if cols.Equals(scope.ToSet()) {
 		return rel, scope
 	} else {
@@ -1498,7 +1505,7 @@ func (e env) remap(cols opt.ColSet, rel any, scope opt.ColList) (any, opt.ColLis
 		cols.ForEach(func(col opt.ColumnID) {
 			exprs = append(exprs, obj{
 				"column": pe.col(col),
-				"ty":     pe.colTy(col),
+				"ty":     pe.colTy(md, col),
 			})
 			newScope = append(newScope, col)
 		})
@@ -1509,13 +1516,13 @@ func (e env) remap(cols opt.ColSet, rel any, scope opt.ColList) (any, opt.ColLis
 	}
 }
 
-func (e env) scan(t opt.TableID, cols opt.ColSet) (any, opt.ColList) {
-	tab := e.md.Table(t)
+func (e Env) scan(md *opt.Metadata, t opt.TableID, cols opt.ColSet) (any, opt.ColList) {
+	tab := md.Table(t)
 	tabCols := opt.ColList{}
 	for i := 0; i < tab.ColumnCount(); i += 1 {
 		tabCols = append(tabCols, t.ColumnID(i))
 	}
-	return e.remap(cols, obj{"scan": t.Idx()}, tabCols)
+	return e.remap(md, cols, obj{"scan": e.tab(tab)}, tabCols)
 }
 
 func joinKind(op opt.Operator) string {
@@ -1523,9 +1530,9 @@ func joinKind(op opt.Operator) string {
 	case opt.InnerJoinOp:
 		return "INNER"
 	case opt.LeftJoinOp:
-		return "Left"
+		return "LEFT"
 	case opt.RightJoinOp:
-		return "Right"
+		return "RIGHT"
 	case opt.FullJoinOp:
 		return "FULL"
 	case opt.SemiJoinOp:
@@ -1537,13 +1544,14 @@ func joinKind(op opt.Operator) string {
 	}
 }
 
-func (e env) relNode(rel RelExpr) (any, opt.ColList) {
+func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
+	md := rel.Memo().Metadata()
 	switch rel := rel.(type) {
 	case *ScanExpr:
 		if rel.Constraint != nil || rel.InvertedConstraint != nil {
 			return fmt.Sprintf("?not-implemented constrained (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
 		}
-		return e.scan(rel.Table, rel.Cols)
+		return e.scan(md, rel.Table, rel.Cols)
 	case *ValuesExpr:
 		rows := []any{}
 		for _, row := range rel.Rows {
@@ -1551,40 +1559,40 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 			case *TupleExpr:
 				eles := []any{}
 				for _, ele := range row.Elems {
-					eles = append(eles, e.rexNode(ele))
+					eles = append(eles, e.RexNode(ele))
 				}
 				rows = append(rows, eles)
 			default:
-				rows = append(rows, arr{e.rexNode(row)})
+				rows = append(rows, arr{e.RexNode(row)})
 			}
 		}
 		schema := []string{}
 		for _, col := range rel.Cols {
-			schema = append(schema, e.colTy(col))
+			schema = append(schema, e.colTy(md, col))
 		}
 		return obj{"values": obj{
 			"schema":  schema,
 			"content": rows,
 		}}, rel.Cols
 	case *SelectExpr:
-		source, scope := e.relNode(rel.Input)
+		source, scope := e.RelNode(rel.Input)
 		return obj{"filter": obj{
-			"condition": e.extend(scope).rexNode(&rel.Filters),
+			"condition": e.extend(scope).RexNode(&rel.Filters),
 			"source":    source,
 		}}, scope
 	case *ProjectExpr:
-		source, inScope := e.relNode(rel.Input)
+		source, inScope := e.RelNode(rel.Input)
 		pe := e.extend(inScope)
 		exprs := []any{}
 		scope := opt.ColList{}
 		for _, p := range rel.Projections {
-			exprs = append(exprs, pe.rexNode(&p))
+			exprs = append(exprs, pe.RexNode(&p))
 			scope = append(scope, p.Col)
 		}
 		rel.Passthrough.ForEach(func(col opt.ColumnID) {
 			exprs = append(exprs, obj{
 				"column": pe.col(col),
-				"ty":     pe.colTy(col),
+				"ty":     pe.colTy(md, col),
 			})
 			scope = append(scope, col)
 		})
@@ -1593,10 +1601,10 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 			"source":  source,
 		}}, scope
 	case *InnerJoinExpr, *LeftJoinExpr, *RightJoinExpr, *FullJoinExpr, *SemiJoinExpr, *AntiJoinExpr:
-		left, leftScope := e.relNode(rel.Child(0).(RelExpr))
-		right, rightScope := e.relNode(rel.Child(1).(RelExpr))
+		left, leftScope := e.RelNode(rel.Child(0).(RelExpr))
+		right, rightScope := e.RelNode(rel.Child(1).(RelExpr))
 		joinScope := append(leftScope, rightScope...)
-		condition := e.extend(joinScope).rexNode(rel.Child(2).(*FiltersExpr))
+		condition := e.extend(joinScope).RexNode(rel.Child(2).(*FiltersExpr))
 		scope := joinScope
 		switch rel.Op() {
 		case opt.SemiJoinOp, opt.AntiJoinOp:
@@ -1609,38 +1617,37 @@ func (e env) relNode(rel RelExpr) (any, opt.ColList) {
 			"right":     right,
 		}}, scope
 	case *InnerJoinApplyExpr:
-		left, leftScope := e.relNode(rel.Left)
-		right, rightScope := e.extend(leftScope).relNode(rel.Right)
+		left, leftScope := e.RelNode(rel.Left)
+		right, rightScope := e.extend(leftScope).RelNode(rel.Right)
 		scope := append(leftScope, rightScope...)
 		return obj{"filter": obj{
-			"condition": e.extend(scope).rexNode(&rel.On),
+			"condition": e.extend(scope).RexNode(&rel.On),
 			"source":    obj{"correlate": arr{left, right}},
 		}}, scope
 	case *LookupJoinExpr:
-		input, inputScope := e.relNode(rel.Input)
-		innerScope := append(inputScope, rel.lookupProps.OutputCols.ToList()...)
+		left, leftScope := e.RelNode(rel.Input)
+		rightCols := rel.lookupProps.OutputCols
+		right, rightScope := e.scan(md, rel.Table, rightCols)
+		innerScope := append(leftScope, rightScope...)
 		condition := append(rel.On, rel.AllLookupFilters...)
-		scan, _ := e.scan(rel.Table, rel.lookupProps.OutputCols)
 		scope := innerScope
 		switch rel.JoinType {
 		case opt.SemiJoinOp, opt.AntiJoinOp:
-			scope = inputScope
+			scope = leftScope
 		}
-		fmt.Printf("condition: %v\n", condition)
-		fmt.Printf("%v + %v = %v\n", rel.Input.Relational().OutputCols, rel.lookupProps.OutputCols.ToList(), innerScope)
 		join := obj{"join": obj{
 			"kind":      joinKind(rel.JoinType),
-			"condition": e.extend(innerScope).rexNode(&condition),
-			"left":      input,
-			"right":     scan,
+			"condition": e.extend(innerScope).RexNode(&condition),
+			"left":      left,
+			"right":     right,
 		}}
-		return e.remap(rel.Relational().OutputCols, join, scope)
+		return e.remap(md, rel.Relational().OutputCols, join, scope)
 	default:
 		return fmt.Sprintf("?not-implemented (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
 	}
 }
 
-func (e env) rexNode(rex opt.ScalarExpr) any {
+func (e Env) RexNode(rex opt.ScalarExpr) any {
 	ty := ty(rex.DataType())
 	switch rex := rex.(type) {
 	case *VariableExpr:
@@ -1657,7 +1664,7 @@ func (e env) rexNode(rex opt.ScalarExpr) any {
 	case *FiltersExpr:
 		fs := []any{}
 		for _, f := range *rex {
-			fs = append(fs, e.rexNode(&f))
+			fs = append(fs, e.RexNode(&f))
 		}
 		return obj{
 			"op":   "AND",
@@ -1665,14 +1672,14 @@ func (e env) rexNode(rex opt.ScalarExpr) any {
 			"type": "BOOL",
 		}
 	case *FiltersItem:
-		return e.rexNode(rex.Condition)
+		return e.RexNode(rex.Condition)
 	case *ProjectionsItem:
-		return e.rexNode(rex.Element)
+		return e.RexNode(rex.Element)
 	default:
 		args := []any{}
 		for i := 0; i < rex.ChildCount(); i += 1 {
 			if arg, ok := rex.Child(i).(opt.ScalarExpr); ok {
-				args = append(args, e.rexNode(arg))
+				args = append(args, e.RexNode(arg))
 			} else {
 				args = append(args, fmt.Sprintf("?arg-of-hop (%v)?", rex.Op().String()))
 			}

@@ -1159,8 +1159,7 @@ func (ot *OptTester) OptBuild() (opt.Expr, error) {
 // optbuilder is the final expression tree.
 func (ot *OptTester) OptNorm() (opt.Expr, error) {
 	if rel, e := ot.OptBuild(); e == nil {
-		exp.before = memo.RelNode(rel.(memo.RelExpr))
-		exp.beforeHelp = ot.FormatExpr(rel)
+		exp.addBefore(rel.(memo.RelExpr), ot.FormatExpr(rel))
 	}
 	o := ot.makeOptimizer()
 	o.NotifyOnMatchedRule(func(ruleName opt.RuleName) bool {
@@ -1175,7 +1174,12 @@ func (ot *OptTester) OptNorm() (opt.Expr, error) {
 	if !ot.Flags.NoStableFolds {
 		o.Factory().FoldingControl().AllowStableFolds()
 	}
-	return ot.optimizeExpr(o, nil)
+	rel, e := ot.optimizeExpr(o, nil)
+	if e == nil {
+		exp.addAfter(rel.(memo.RelExpr), ot.FormatExpr(rel))
+		exp.dump()
+	}
+	return rel, e
 }
 
 // Optimize constructs an opt expression tree for the SQL query, with all
@@ -1183,10 +1187,14 @@ func (ot *OptTester) OptNorm() (opt.Expr, error) {
 // the lowest estimated cost.
 func (ot *OptTester) Optimize() (opt.Expr, error) {
 	if rel, e := ot.OptBuild(); e == nil {
-		exp.before = memo.RelNode(rel.(memo.RelExpr))
-		exp.beforeHelp = ot.FormatExpr(rel)
+		exp.addBefore(rel.(memo.RelExpr), ot.FormatExpr(rel))
 	}
-	return ot.OptimizeWithTables(nil)
+	rel, e := ot.OptimizeWithTables(nil)
+	if e == nil {
+		exp.addAfter(rel.(memo.RelExpr), ot.FormatExpr(rel))
+		exp.dump()
+	}
+	return rel, e
 }
 
 // OptimizeWithTables is identical to Optimize except it also allows the user to
@@ -2285,7 +2293,7 @@ func (ot *OptTester) makeOptimizer() *xform.Optimizer {
 
 type exporter struct {
 	id         uint
-	schema     any
+	env        memo.Env
 	before     any
 	beforeHelp string
 	after      any
@@ -2294,24 +2302,30 @@ type exporter struct {
 
 var exp = &exporter{}
 
+func (e *exporter) addBefore(rel memo.RelExpr, help string) {
+	e.env.Init()
+	e.before, _ = e.env.RelNode(rel)
+	e.beforeHelp = help
+}
+
+func (e *exporter) addAfter(rel memo.RelExpr, help string) {
+	e.after, _ = e.env.RelNode(rel)
+	e.afterHelp = help
+}
+
 func (e *exporter) dump() {
-	if e.schema != nil && e.before != nil && e.after != nil {
-		f, err := os.Create(fmt.Sprintf("/home/wsx/proj/cockroach/tmp/%v.json", e.id))
+	if e.before != nil && e.after != nil {
+		f, err := os.Create(fmt.Sprintf("/home/wsx/proj/cockroach/tmp/xform/%v.json", e.id))
+
 		if err != nil {
 			panic(err)
 		}
 		defer f.Close()
 		w := bufio.NewWriter(f)
 		output := map[string]any{
-			"schemas": e.schema,
-			"queries": []any{
-				e.before,
-				e.after,
-			},
-			"help": []any{
-				e.beforeHelp,
-				e.afterHelp,
-			},
+			"schemas": e.env.Schema(),
+			"queries": []any{e.before, e.after},
+			"help":    []any{e.beforeHelp, e.afterHelp},
 		}
 		rawOutput, err := json.MarshalIndent(output, "", "  ")
 		if err != nil {
@@ -2324,7 +2338,7 @@ func (e *exporter) dump() {
 		w.Flush()
 	}
 	e.id += 1
-	e.schema = nil
+	e.env.Init()
 	e.before = nil
 	e.after = nil
 }
@@ -2342,7 +2356,6 @@ func (ot *OptTester) optimizeExpr(
 	if tables != nil {
 		o.Memo().Metadata().UpdateTableMeta(&ot.evalCtx, tables)
 	}
-	exp.schema = memo.Schema(o.Memo())
 	root, err := o.Optimize()
 	if err != nil {
 		return nil, err
@@ -2351,9 +2364,6 @@ func (ot *OptTester) optimizeExpr(
 	if ot.Flags.PerturbCost != 0 {
 		o.RecomputeCost()
 	}
-	exp.after = memo.RelNode(root.(memo.RelExpr))
-	exp.afterHelp = ot.FormatExpr(root)
-	exp.dump()
 	return root, nil
 }
 
