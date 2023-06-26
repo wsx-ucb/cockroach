@@ -1514,6 +1514,31 @@ func (e Env) remap(md *opt.Metadata, cols opt.ColSet, rel any, scope opt.ColList
 	}
 }
 
+func (e Env) reord(md *opt.Metadata, newScope opt.ColList, rel any, scope opt.ColList) (any, opt.ColList) {
+	if newScope.Equals(scope) {
+		return rel, scope
+	} else {
+		pe := e.extend(scope)
+		exprs := []any{}
+		for _, col := range newScope {
+			exprs = append(exprs, obj{
+				"column": pe.col(col),
+				"ty":     colTy(md, col),
+			})
+		}
+		return obj{"project": obj{
+			"columns": exprs,
+			"source":  rel,
+		}}, newScope
+	}
+}
+
+func (e Env) scopeRelNode(md *opt.Metadata, rel RelExpr, scope opt.ColList) any {
+	node, scp := e.RelNode(rel)
+	node, _ = e.reord(md, scope, node, scp)
+	return node
+}
+
 func (e Env) scan(md *opt.Metadata, t opt.TableID, cols opt.ColSet) (any, opt.ColList) {
 	tab := md.Table(t)
 	tabCols := opt.ColList{}
@@ -1542,7 +1567,13 @@ func joinKind(op opt.Operator) string {
 	}
 }
 
-func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
+func (e Env) RelNode(rel RelExpr) (relNode any, scp opt.ColList) {
+	defer func() {
+		if recover() != nil {
+			relNode = nil
+			scp = opt.ColList{}
+		}
+	}()
 	md := rel.Memo().Metadata()
 	switch rel := rel.(type) {
 	case *ScanExpr:
@@ -1598,6 +1629,23 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 			"columns": exprs,
 			"source":  source,
 		}}, scope
+	case *UnionAllExpr, *UnionExpr, *IntersectExpr, *ExceptExpr:
+		private := rel.Private().(SetPrivate)
+		left, leftScope := e.RelNode(rel.Child(0).(RelExpr))
+		left, _ = e.reord(md, private.LeftCols, left, leftScope)
+		right, rightScope := e.RelNode(rel.Child(1).(RelExpr))
+		right, _ = e.reord(md, private.RightCols, right, rightScope)
+		scope := private.OutCols
+		switch rel.Op() {
+		case opt.UnionAllOp:
+			return obj{"union": arr{left, right}}, scope
+		case opt.UnionOp:
+			return obj{"distinct": obj{"union": arr{left, right}}}, scope
+		case opt.IntersectOp:
+			return obj{"intersect": arr{left, right}}, scope
+		default: // case opt.ExceptOp
+			return obj{"except": arr{left, right}}, scope
+		}
 	case *InnerJoinExpr, *LeftJoinExpr, *RightJoinExpr, *FullJoinExpr, *SemiJoinExpr, *AntiJoinExpr:
 		left, leftScope := e.RelNode(rel.Child(0).(RelExpr))
 		right, rightScope := e.RelNode(rel.Child(1).(RelExpr))
