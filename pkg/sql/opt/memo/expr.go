@@ -1549,7 +1549,15 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 		if rel.Constraint != nil || rel.InvertedConstraint != nil {
 			return fmt.Sprintf("?not-implemented constrained (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
 		}
-		return e.scan(md, rel.Table, rel.Cols)
+		scan, scanScope := e.scan(md, rel.Table, rel.Cols)
+		if rel.HardLimit != 0 {
+			scan = obj{"sort": obj{
+				"collation": arr{},
+				"limit":     rel.HardLimit,
+				"source":    scan,
+			}}
+		}
+		return scan, scanScope
 	case *ValuesExpr:
 		rows := []any{}
 		for _, row := range rel.Rows {
@@ -1705,6 +1713,56 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 			"right": right,
 		}}
 		return e.remap(md, rel.Relational().OutputCols, join, scope)
+	case *SortExpr:
+		input, inputScope := e.RelNode(rel)
+		sortEnv := e.extend(inputScope)
+		collationList := arr{}
+		for _, cr := range rel.InputOrdering.Columns {
+			r := "ASCENDING"
+			if cr.Descending {
+				r = "DESCENDING"
+			}
+			c := cr.Group.ToList()[0]
+			collationList = append(collationList, arr{sortEnv.col(c), colTy(md, c), r})
+		}
+		return obj{"sort": obj{
+			"collation": collationList,
+			"source":    input,
+		}}, inputScope
+	case *LimitExpr:
+		input, inputScope := e.RelNode(rel)
+		sortEnv := e.extend(inputScope)
+		collationList := arr{}
+		for _, cr := range rel.Ordering.Columns {
+			r := "ASCENDING"
+			if cr.Descending {
+				r = "DESCENDING"
+			}
+			c := cr.Group.ToList()[0]
+			collationList = append(collationList, arr{sortEnv.col(c), colTy(md, c), r})
+		}
+		return obj{"sort": obj{
+			"collation": collationList,
+			"limit":     e.extend(inputScope).RexNode(rel.Limit),
+			"source":    input,
+		}}, inputScope
+	case *OffsetExpr:
+		input, inputScope := e.RelNode(rel)
+		sortEnv := e.extend(inputScope)
+		collationList := arr{}
+		for _, cr := range rel.Ordering.Columns {
+			r := "ASCENDING"
+			if cr.Descending {
+				r = "DESCENDING"
+			}
+			c := cr.Group.ToList()[0]
+			collationList = append(collationList, arr{sortEnv.col(c), colTy(md, c), r})
+		}
+		return obj{"sort": obj{
+			"collation": collationList,
+			"offset":    e.extend(inputScope).RexNode(rel.Offset),
+			"source":    input,
+		}}, inputScope
 	default:
 		return fmt.Sprintf("?not-implemented (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
 	}
