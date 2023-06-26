@@ -1427,12 +1427,10 @@ func (e *Env) Init() {
 func (e Env) extend(cols opt.ColList) Env {
 	dict, lvl, tmap, tabs := e.dict, e.lvl, e.tmap, e.tabs
 	for _, col := range cols {
-		if vl, exists := dict.Get(col); !exists {
+		if _, exists := dict.Get(col); !exists {
 			dict = dict.Set(col, lvl)
-			lvl += 1
-		} else {
-			panic(fmt.Sprintf("Duplicated column ID mapping: %v => %v or %v", col, vl, lvl))
 		}
+		lvl += 1
 	}
 	return Env{dict, lvl, tmap, tabs}
 }
@@ -1496,7 +1494,7 @@ func ty(t *types.T) string {
 }
 
 func (e Env) remap(md *opt.Metadata, cols opt.ColSet, rel any, scope opt.ColList) (any, opt.ColList) {
-	if cols.Equals(scope.ToSet()) {
+	if len(scope) == cols.Len() && cols.Equals(scope.ToSet()) {
 		return rel, scope
 	} else {
 		pe := e.extend(scope)
@@ -1666,6 +1664,15 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 		left, leftScope := e.RelNode(rel.Input)
 		rightCols := rel.lookupProps.OutputCols
 		right, rightScope := e.scan(md, rel.Table, rightCols)
+		leftColSet := leftScope.ToSet()
+		rightEqCols := []opt.ColumnID{}
+		for _, c := range rightScope {
+			if leftColSet.Contains(c) {
+				rightEqCols = append(rightEqCols, c)
+			}
+		}
+		leftEnv := e.extend(leftScope)
+		rightEnv := e.extend(rightScope)
 		innerScope := append(leftScope, rightScope...)
 		condition := append(rel.On, rel.AllLookupFilters...)
 		scope := innerScope
@@ -1673,11 +1680,29 @@ func (e Env) RelNode(rel RelExpr) (any, opt.ColList) {
 		case opt.SemiJoinOp, opt.AntiJoinOp:
 			scope = leftScope
 		}
+		matchList := arr{e.extend(innerScope).RexNode(&condition)}
+		for _, c := range rightEqCols {
+			matchList = append(matchList, obj{
+				"op": "<=>",
+				"args": arr{obj{
+					"column": leftEnv.col(c),
+					"ty":     colTy(md, c),
+				}, obj{
+					"column": int(rightEnv.col(c)) + len(leftScope),
+					"ty":     colTy(md, c),
+				}},
+				"type": "BOOL",
+			})
+		}
 		join := obj{"join": obj{
-			"kind":      joinKind(rel.JoinType),
-			"condition": e.extend(innerScope).RexNode(&condition),
-			"left":      left,
-			"right":     right,
+			"kind": joinKind(rel.JoinType),
+			"condition": obj{
+				"op":   "AND",
+				"args": matchList,
+				"type": "BOOL",
+			},
+			"left":  left,
+			"right": right,
 		}}
 		return e.remap(md, rel.Relational().OutputCols, join, scope)
 	default:

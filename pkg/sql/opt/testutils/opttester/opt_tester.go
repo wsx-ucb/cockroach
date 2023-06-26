@@ -2315,7 +2315,8 @@ func (e *exporter) addAfter(rel memo.RelExpr, help string) {
 
 func (e *exporter) dump() {
 	if e.before != nil && e.after != nil {
-		f, err := os.Create(fmt.Sprintf("/home/wsx/proj/cockroach/tmp/xform/%v.json", e.id))
+		dump_dir := os.Getenv("COCKROACH_DUMP_DIR")
+		f, err := os.Create(fmt.Sprintf("%s/%v.json", dump_dir, e.id))
 
 		if err != nil {
 			panic(err)
