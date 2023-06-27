@@ -1761,6 +1761,46 @@ func (e Env) RelNode(rel RelExpr) (relNode any, scp opt.ColList) {
 			"right": right,
 		}}
 		return e.remap(md, rel.Relational().OutputCols, join, scope)
+	case *IndexJoinExpr:
+		left, leftScope := e.RelNode(rel.Input)
+		rightCols := rel.Cols
+		right, rightScope := e.scan(md, rel.Table, rightCols)
+		leftColSet := leftScope.ToSet()
+		rightEqCols := []opt.ColumnID{}
+		for _, c := range rightScope {
+			if leftColSet.Contains(c) {
+				rightEqCols = append(rightEqCols, c)
+			}
+		}
+		leftEnv := e.extend(leftScope)
+		rightEnv := e.extend(rightScope)
+		innerScope := append(leftScope, rightScope...)
+		scope := innerScope
+		matchList := arr{}
+		for _, c := range rightEqCols {
+			matchList = append(matchList, obj{
+				"op": "<=>",
+				"args": arr{obj{
+					"column": leftEnv.col(c),
+					"ty":     colTy(md, c),
+				}, obj{
+					"column": int(rightEnv.col(c)) + len(leftScope),
+					"ty":     colTy(md, c),
+				}},
+				"type": "BOOL",
+			})
+		}
+		join := obj{"join": obj{
+			"kind": "INNER",
+			"condition": obj{
+				"op":   "AND",
+				"args": matchList,
+				"type": "BOOL",
+			},
+			"left":  left,
+			"right": right,
+		}}
+		return e.remap(md, rel.Relational().OutputCols, join, scope)
 	case *SortExpr:
 		input, inputScope := e.RelNode(rel.Input)
 		sortEnv := e.extend(inputScope)
