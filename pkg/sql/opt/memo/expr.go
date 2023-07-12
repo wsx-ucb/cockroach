@@ -1469,6 +1469,12 @@ func (e Env) Schema() any {
 			nbs = append(nbs, col.IsNullable())
 		}
 		kys := arr{}
+		primary := table.Index(cat.PrimaryIndex)
+		kst := arr{}
+		for i := 0; i < primary.LaxKeyColumnCount(); i += 1 {
+			kst = append(kst, primary.Column(i).Ordinal())
+		}
+		kys = append(kys, kst)
 		for i := 0; i < table.UniqueCount(); i++ {
 			unique_constraint := table.Unique(i)
 			if _, partial := unique_constraint.Predicate(); !partial {
@@ -1548,6 +1554,14 @@ func (e Env) scan(md *opt.Metadata, t opt.TableID, cols opt.ColSet) (any, opt.Co
 	return e.remap(md, cols, obj{"scan": e.tab(tab)}, tabCols)
 }
 
+func datum(data tree.Datum, typ string) any {
+	return obj{
+		"op":   data.String(),
+		"args": arr{},
+		"type": typ,
+	}
+}
+
 func joinKind(op opt.Operator) string {
 	switch op {
 	case opt.InnerJoinOp:
@@ -1569,18 +1583,86 @@ func joinKind(op opt.Operator) string {
 
 func (e Env) RelNode(rel RelExpr) (relNode any, scp opt.ColList) {
 	defer func() {
-		if recover() != nil {
-			relNode = nil
+		if err := recover(); err != nil {
+			relNode = fmt.Sprintf("?error: %v?", err)
 			scp = opt.ColList{}
 		}
 	}()
 	md := rel.Memo().Metadata()
 	switch rel := rel.(type) {
 	case *ScanExpr:
-		if rel.Constraint != nil || rel.InvertedConstraint != nil {
+		if rel.Constraint != nil && rel.InvertedConstraint != nil {
 			return fmt.Sprintf("?not-implemented constrained (%v)?", rel.Op().String()), rel.Relational().OutputCols.ToList()
 		}
 		scan, scanScope := e.scan(md, rel.Table, rel.Cols)
+		pe := e.extend(scanScope)
+		if rel.Constraint != nil {
+			disj := arr{}
+			for k := 0; k < rel.Constraint.Spans.Count(); k += 1 {
+				span := rel.Constraint.Spans.Get(k)
+				conj := arr{}
+				for j := 0; j < rel.Constraint.Columns.Count(); j += 1 {
+					col := rel.Constraint.Columns.Get(j)
+					ty := colTy(md, col.ID())
+					var lower, upper tree.Datum
+					if j < span.StartKey().Length() {
+						lower = span.StartKey().Value(j)
+					}
+					if j < span.EndKey().Length() {
+						upper = span.EndKey().Value(j)
+					}
+					if col.Descending() {
+						lower, upper = upper, lower
+					}
+					column := obj{
+						"column": pe.col(col.ID()),
+						"ty":     ty,
+					}
+					if lower != nil {
+						op := "<="
+						if lower == tree.DNull {
+							op = "IS"
+							if span.StartBoundary() == excludeBoundary {
+								op = "IS NOT"
+							}
+						} else if span.StartBoundary() == excludeBoundary {
+							op = "<"
+						}
+						conj = append(conj, obj{
+							"op":   op,
+							"args": arr{datum(lower, ty), column},
+							"ty":   "BOOL",
+						})
+					}
+					if upper != nil {
+						op := "<="
+						if upper == tree.DNull && span.EndBoundary() == includeBoundary {
+							op = "IS"
+						} else if span.StartBoundary() == excludeBoundary {
+							op = "<"
+						}
+						conj = append(conj, obj{
+							"op":   op,
+							"args": arr{column, datum(upper, ty)},
+							"ty":   "BOOL",
+						})
+					}
+				}
+				disj = append(disj, obj{
+					"op":   "AND",
+					"args": conj,
+					"ty":   "BOOL",
+				})
+			}
+			scan = obj{"filter": obj{
+				"condition": obj{
+					"op":   "OR",
+					"args": disj,
+					"ty":   "BOOL",
+				},
+				"source": scan,
+			}}
+		}
 		if rel.HardLimit != 0 {
 			scan = obj{"sort": obj{
 				"collation": arr{},
@@ -1638,7 +1720,7 @@ func (e Env) RelNode(rel RelExpr) (relNode any, scp opt.ColList) {
 			"source":  source,
 		}}, scope
 	case *UnionAllExpr, *UnionExpr, *IntersectExpr, *ExceptExpr:
-		private := rel.Private().(SetPrivate)
+		private := rel.Private().(*SetPrivate)
 		left, leftScope := e.RelNode(rel.Child(0).(RelExpr))
 		left, _ = e.reord(md, private.LeftCols, left, leftScope)
 		right, rightScope := e.RelNode(rel.Child(1).(RelExpr))
@@ -1845,11 +1927,7 @@ func (e Env) RexNode(rex opt.ScalarExpr) any {
 			"type":   ty,
 		}
 	case *ConstExpr:
-		return obj{
-			"op":   rex.Value.String(),
-			"args": arr{},
-			"type": ty,
-		}
+		return datum(rex.Value, ty)
 	case *FiltersExpr:
 		fs := []any{}
 		for _, f := range *rex {
@@ -1882,6 +1960,8 @@ func (e Env) RexNode(rex opt.ScalarExpr) any {
 				"type": "BOOL",
 			}
 		}
+		return fmt.Sprintf("?not-implemented (%v)?", rex.Op().String())
+	case *ArrayExpr, *TupleExpr:
 		return fmt.Sprintf("?not-implemented (%v)?", rex.Op().String())
 	default:
 		args := []any{}
